@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -22,6 +23,8 @@ RAW_BASE = "https://raw.githubusercontent.com/majdross/wedgeiq-printful-assets/m
 ARTWORK = "01_PRINTFUL_UPLOAD/TEE_DTG/FLIGHT_IT_NAVY_3600px.png"
 PRODUCT_NAME = "WedgeIQ FLIGHT IT Tee | Next Level 3600"
 EXTERNAL_ID = "wedgeiq-flight-it-nl3600-v1"
+ARTWORK_WIDTH_PX = 2693
+ARTWORK_HEIGHT_PX = 3600
 
 
 def request_json(method, path, token, store_id=None, payload=None):
@@ -74,6 +77,56 @@ def get_variants(token, product_id):
     return all_variants
 
 
+def get_front_dtg_print_area(token, product_id):
+    """Use Printful's mockup-styles endpoint to discover the actual front DTG print area in inches."""
+    offset = 0
+    while True:
+        path = f"/v2/catalog-products/{product_id}/mockup-styles?limit=20&offset={offset}"
+        doc = request_json("GET", path, token)
+        data = doc.get("data", [])
+        for item in data:
+            if item.get("placement") == "front" and item.get("technique") == "dtg":
+                w = float(item.get("print_area_width"))
+                h = float(item.get("print_area_height"))
+                return {
+                    "width": w,
+                    "height": h,
+                    "dpi": item.get("dpi"),
+                    "print_area_type": item.get("print_area_type", "simple"),
+                }
+        paging = doc.get("paging", {})
+        total = paging.get("total", 0)
+        offset += len(data)
+        if not data or offset >= total:
+            break
+    raise SystemExit("Could not discover a front/DTG print area for this catalog product.")
+
+
+def calculate_position(area_width, area_height):
+    """Fit artwork inside the print area at a premium tee scale and center it.
+
+    Printful v2 position values are inches. We target at most 10 inches wide and
+    at most 85% of the available print area, preserving the source aspect ratio.
+    """
+    aspect = ARTWORK_HEIGHT_PX / ARTWORK_WIDTH_PX
+    target_width = min(10.0, area_width * 0.85)
+    target_height = target_width * aspect
+
+    if target_height > area_height * 0.90:
+        target_height = area_height * 0.90
+        target_width = target_height / aspect
+
+    left = max(0.0, (area_width - target_width) / 2.0)
+    top = max(0.0, (area_height - target_height) / 2.0)
+
+    return {
+        "width": round(target_width, 3),
+        "height": round(target_height, 3),
+        "left": round(left, 3),
+        "top": round(top, 3),
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--create", action="store_true", help="Create the unpublished FLIGHT IT My Product after discovery")
@@ -108,19 +161,26 @@ def main():
     for v in white:
         print(f"  variant_id={v.get('id')} | {v.get('color')} | {v.get('size')}")
 
+    print_area = get_front_dtg_print_area(token, product_id)
+    position = calculate_position(print_area["width"], print_area["height"])
+    print(f"\nFront DTG print area: {print_area['width']} x {print_area['height']} inches")
+    print(f"Calculated centered artwork position: {position}")
+
     discovery = {
         "catalog_product": product,
         "white_launch_variants": white,
         "artwork_url": f"{RAW_BASE}/{ARTWORK}",
         "planned_name": PRODUCT_NAME,
         "planned_external_id": EXTERNAL_ID,
+        "front_dtg_print_area": print_area,
+        "calculated_position": position,
     }
     with open("stage2_flight_it_discovery.json", "w", encoding="utf-8") as f:
         json.dump(discovery, f, indent=2)
     print("\nWrote stage2_flight_it_discovery.json")
 
     if not args.create:
-        print("\nDISCOVERY ONLY. If the catalog match/variants look correct, run:")
+        print("\nDISCOVERY ONLY. If the catalog match/variants and print position look correct, run:")
         print("  python3 scripts/stage2_create_flight_it.py --create")
         return
 
@@ -131,12 +191,12 @@ def main():
             {
                 "placement": "front",
                 "technique": "dtg",
-                "print_area_type": "simple",
+                "print_area_type": print_area["print_area_type"],
                 "layers": [
                     {
                         "type": "file",
                         "url": artwork_url,
-                        "position": {}
+                        "position": position,
                     }
                 ],
                 "placement_options": []
