@@ -27,7 +27,7 @@ ARTWORK_WIDTH_PX = 2693
 ARTWORK_HEIGHT_PX = 3600
 
 
-def request_json(method, path, token, store_id=None, payload=None):
+def request_json(method, path, token, store_id=None, payload=None, allow_404=False):
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     if store_id:
         headers["X-PF-Store-Id"] = str(store_id)
@@ -38,6 +38,8 @@ def request_json(method, path, token, store_id=None, payload=None):
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
+        if allow_404 and e.code == 404:
+            return None
         print(f"HTTP {e.code}: {body}", file=sys.stderr)
         raise
 
@@ -78,7 +80,6 @@ def get_variants(token, product_id):
 
 
 def get_front_dtg_print_area(token, product_id):
-    """Use Printful's mockup-styles endpoint to discover the actual front DTG print area in inches."""
     offset = 0
     while True:
         path = f"/v2/catalog-products/{product_id}/mockup-styles?limit=20&offset={offset}"
@@ -103,28 +104,38 @@ def get_front_dtg_print_area(token, product_id):
 
 
 def calculate_position(area_width, area_height):
-    """Fit artwork inside the print area at a premium tee scale and center it.
-
-    Printful v2 position values are inches. We target at most 10 inches wide and
-    at most 85% of the available print area, preserving the source aspect ratio.
-    """
     aspect = ARTWORK_HEIGHT_PX / ARTWORK_WIDTH_PX
     target_width = min(10.0, area_width * 0.85)
     target_height = target_width * aspect
-
     if target_height > area_height * 0.90:
         target_height = area_height * 0.90
         target_width = target_height / aspect
-
     left = max(0.0, (area_width - target_width) / 2.0)
     top = max(0.0, (area_height - target_height) / 2.0)
-
     return {
         "width": round(target_width, 3),
         "height": round(target_height, 3),
         "left": round(left, 3),
         "top": round(top, 3),
     }
+
+
+def normalize_product_data(doc):
+    """Return a single product dict whether Printful returns data as an object or single-item list."""
+    if not doc:
+        return None
+    data = doc.get("data") if isinstance(doc, dict) else doc
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, list):
+        return data[0] if data else None
+    return None
+
+
+def get_existing_product(token, store_id):
+    encoded = urllib.parse.quote("@" + EXTERNAL_ID, safe="@")
+    doc = request_json("GET", f"/v2/products/{encoded}", token, store_id, allow_404=True)
+    return normalize_product_data(doc)
 
 
 def main():
@@ -184,6 +195,15 @@ def main():
         print("  python3 scripts/stage2_create_flight_it.py --create")
         return
 
+    existing = get_existing_product(token, store_id)
+    if existing:
+        with open("stage2_flight_it_product.json", "w", encoding="utf-8") as f:
+            json.dump({"data": existing}, f, indent=2)
+        print("\nProduct already exists — no duplicate created.")
+        print(f"Existing product id={existing.get('id')} name={existing.get('name')}")
+        print("Wrote stage2_flight_it_product.json")
+        return
+
     artwork_url = f"{RAW_BASE}/{urllib.parse.quote(ARTWORK, safe='/._-')}"
     payload = {
         "product_options": [],
@@ -213,7 +233,10 @@ def main():
     with open("stage2_flight_it_product.json", "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
 
-    data = result.get("data", {})
+    data = normalize_product_data(result)
+    if not data:
+        print("Printful returned success but the product payload could not be normalized. Check stage2_flight_it_product.json.")
+        return
     print(f"Created product id={data.get('id')} name={data.get('name')}")
     print("Wrote stage2_flight_it_product.json")
     print("This product is UNPUBLISHED; it has not been pushed to Shopify.")
