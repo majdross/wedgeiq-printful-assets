@@ -1,0 +1,1 @@
+# wedgeiq-printful-assets
