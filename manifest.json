@@ -1,0 +1,22 @@
+{
+  "brand": "WedgeIQ",
+  "version": "1.0",
+  "colors": {
+    "iq_navy": "#09192D",
+    "white": "#FFFFFF",
+    "black": "#000000"
+  },
+  "collections": {
+    "it_series": ["FLIGHT IT", "SPIN IT", "COMPRESS IT", "FLOP IT", "STICK IT"],
+    "card_tee": {
+      "blank": "Next Level 3600",
+      "garment_color": "White",
+      "front": "Small Signature IQ in IQ Navy, left chest, target 1.25-1.50 inches wide",
+      "back": "Official WedgeIQ Card front, centered, target 8.5-10 inches wide"
+    }
+  },
+  "status": {
+    "stick_it": "source artwork update required before production",
+    "printful": "sample before publishing"
+  }
+}
