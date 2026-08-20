@@ -14,13 +14,15 @@ Default behavior:
   - DRY RUN
   - checks the source template
   - checks Printful's compatible-products list
+  - falls back to the legacy compatible-products endpoint if v2 returns 404
   - tests the requested target against that list
   - does NOT create anything unless --create is supplied
-  - refuses an incompatible target unless --force is supplied
+  - refuses an incompatible/unknown target unless --force is supplied
 
 Examples:
   python3 scripts/stage5_product_template_swap.py --only hoodie
   python3 scripts/stage5_product_template_swap.py --only hoodie --create
+  python3 scripts/stage5_product_template_swap.py --only hoodie --create --force
 
 Requires:
   PRINTFUL_TOKEN
@@ -35,16 +37,13 @@ import json
 import os
 import sys
 import urllib.error
-import urllib.parse
 import urllib.request
 from pathlib import Path
 
 API = "https://api.printful.com"
 SOURCE_TEMPLATE_ID = 106433451
-PLAN_PATH = Path("product_catalog_plan.json")
 OUT_PATH = Path("stage5_product_template_swap_results.json")
 
-# Locked target products from the approved WedgeIQ catalog plan.
 TARGETS = {
     "hoodie": {
         "catalog_product_id": 380,
@@ -89,13 +88,11 @@ TARGETS = {
 }
 
 
-def request_json(method, path, token, store_id=None, payload=None):
+def request_json(method, path, token, store_id=None, payload=None, allow_404=False):
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
-    # Product Templates are account/environment resources, but keeping the store
-    # header is safe for the account-level token setup already used by WedgeIQ.
     if store_id:
         headers["X-PF-Store-Id"] = str(store_id)
 
@@ -107,6 +104,8 @@ def request_json(method, path, token, store_id=None, payload=None):
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
+        if allow_404 and e.code == 404:
+            return {"_http_404": True, "_raw": body}
         print(f"HTTP {e.code}: {body}", file=sys.stderr)
         raise
 
@@ -121,29 +120,36 @@ def get_source_template(token, store_id):
 
 
 def get_compatible_products(token, store_id):
-    # Follow pagination in case Printful returns more than one page.
-    items = []
-    offset = 0
-    limit = 100
-    while True:
-        doc = request_json(
-            "GET",
-            f"/v2/product-templates/{SOURCE_TEMPLATE_ID}/compatible-products?limit={limit}&offset={offset}",
-            token,
-            store_id,
-        )
-        page = doc.get("data", []) or []
-        items.extend(page)
-        paging = doc.get("paging", {}) or {}
-        total = paging.get("total")
-        if not page:
-            break
-        offset += len(page)
-        if total is not None and offset >= total:
-            break
-        if len(page) < limit:
-            break
-    return items
+    """Try v2 first. If Printful returns 404, fall back to legacy endpoint."""
+    v2_path = f"/v2/product-templates/{SOURCE_TEMPLATE_ID}/compatible-products?limit=100&offset=0"
+    doc = request_json("GET", v2_path, token, store_id, allow_404=True)
+
+    if not doc.get("_http_404"):
+        return {
+            "endpoint": "v2",
+            "supported": True,
+            "items": doc.get("data", []) or [],
+            "raw": doc,
+        }
+
+    print("v2 compatible-products returned 404; trying legacy Product Templates endpoint...")
+    legacy_path = f"/product-templates/{SOURCE_TEMPLATE_ID}/compatible-products?limit=100&offset=0"
+    legacy = request_json("GET", legacy_path, token, store_id, allow_404=True)
+
+    if legacy.get("_http_404"):
+        return {
+            "endpoint": "none",
+            "supported": False,
+            "items": [],
+            "raw": {"v2": doc, "legacy": legacy},
+        }
+
+    return {
+        "endpoint": "legacy",
+        "supported": True,
+        "items": legacy.get("result", []) or [],
+        "raw": legacy,
+    }
 
 
 def product_id(item):
@@ -195,7 +201,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="hoodie", choices=sorted(TARGETS), help="Target product key")
     ap.add_argument("--create", action="store_true", help="Actually create the Product Template")
-    ap.add_argument("--force", action="store_true", help="Allow transfer even if target is not in Printful compatible-products list")
+    ap.add_argument("--force", action="store_true", help="Attempt transfer even if compatibility is NO or cannot be checked")
     args = ap.parse_args()
 
     token = os.getenv("PRINTFUL_TOKEN")
@@ -224,12 +230,19 @@ def main():
             print(f"  - {p.get('placement')} | technique={p.get('technique')} | status={p.get('status')}")
 
     print("\nChecking Printful compatible products...")
-    compatible = get_compatible_products(token, store_id)
+    compat = get_compatible_products(token, store_id)
+    compatible = compat["items"]
     match = find_target(compatible, target["catalog_product_id"])
-    print(f"Compatible products returned: {len(compatible)}")
-    print(f"Target compatible:            {'YES' if match else 'NO'}")
+
+    print(f"Compatibility endpoint:         {compat['endpoint']}")
+    print(f"Compatibility check supported:  {'YES' if compat['supported'] else 'NO'}")
+    print(f"Compatible products returned:   {len(compatible)}")
+    if compat["supported"]:
+        print(f"Target compatible:              {'YES' if match else 'NO'}")
+    else:
+        print("Target compatible:              UNKNOWN (endpoint unavailable)")
     if match:
-        print(f"Matched product:              {match.get('name')} | id={product_id(match)}")
+        print(f"Matched product:                {match.get('name') or match.get('title')} | id={product_id(match)}")
 
     payload = {
         "source": "product_template",
@@ -245,7 +258,9 @@ def main():
         "key": args.only,
         "source_template_id": SOURCE_TEMPLATE_ID,
         "target": target,
-        "compatible": bool(match),
+        "compatibility_endpoint": compat["endpoint"],
+        "compatibility_supported": compat["supported"],
+        "compatible": bool(match) if compat["supported"] else None,
         "compatible_match": match,
         "payload": payload,
     }
@@ -257,17 +272,22 @@ def main():
         if match:
             print("Target is compatible. To create it in Product Templates:")
             print(f"  python3 scripts/stage5_product_template_swap.py --only {args.only} --create")
+        elif not compat["supported"]:
+            print("Printful would not expose either compatible-products endpoint for this template/account.")
+            print("The v2 create-from-template operation is still documented, but compatibility cannot be pre-validated.")
+            print("For ONE intentional pilot only, use:")
+            print(f"  python3 scripts/stage5_product_template_swap.py --only {args.only} --create --force")
         else:
             print("Target is NOT in Printful's compatible-products list.")
-            print("Do not use --force unless you intentionally want to test a potentially incomplete design transfer.")
+            print("For one intentional experiment only, add --force.")
         return
 
     if not match and not args.force:
-        result["status"] = "blocked_incompatible"
+        result["status"] = "blocked_unverified_or_incompatible"
         save_result(result)
         raise SystemExit(
-            "STOPPED: target is not in Printful's compatible-products list. "
-            "Nothing was created. Use --force only for an intentional experiment."
+            "STOPPED: target is not confirmed compatible. Nothing was created. "
+            "Use --force only for a single intentional pilot."
         )
 
     print("\nCreating Product Template in Printful...")
