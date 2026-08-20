@@ -1,0 +1,20 @@
+{
+  "brand": "WedgeIQ",
+  "version": "1.0",
+  "masters": {
+    "performance_tee": {
+      "catalog_product_id": 108,
+      "template_id": 106433451,
+      "status": "existing",
+      "artwork": "manual",
+      "notes": "Existing NL3600 reusable master"
+    },
+    "hoodie": {
+      "catalog_product_id": 380,
+      "template_id": 106481965,
+      "status": "existing",
+      "artwork": "manual",
+      "notes": "Manual hoodie master created in Printful Product Templates"
+    }
+  }
+}
