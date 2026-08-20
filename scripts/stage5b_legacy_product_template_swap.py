@@ -8,12 +8,12 @@ Why this exists:
     POST /product-templates/{template_id}/swap-product
   which creates a NEW Product Template using a different catalog product.
 
-Important Printful limitation:
-Printful documents design transfer for this legacy swap endpoint as working only
-for source Product Templates using DTG. The current WedgeIQ source template
-106433451 uses DTF placements. Therefore this script is a CONTROLLED PILOT only.
-It will test ONE hoodie and save the complete response. Do not bulk-run until the
-new template is visually confirmed in Printful > Product templates.
+This version uses the dedicated WedgeIQ DTG source template:
+  106482179
+
+The legacy swap endpoint requires the source Product Template to use DTG.
+Default behavior is dry-run. Test ONE hoodie first and visually confirm the
+result in Printful > Product templates before running additional targets.
 
 Requires:
   PRINTFUL_TOKEN
@@ -33,49 +33,49 @@ import urllib.request
 from pathlib import Path
 
 API = "https://api.printful.com"
-SOURCE_TEMPLATE_ID = 106433451
+SOURCE_TEMPLATE_ID = 106482179
 OUT_PATH = Path("stage5b_legacy_swap_results.json")
 
 TARGETS = {
     "hoodie": {
         "catalog_product_id": 380,
         "name": "WedgeIQ MASTER - Cotton Heritage M2580",
-        "external_id": "wedgeiq-master-hoodie-m2580-legacy-v1",
+        "external_id": "wedgeiq-master-hoodie-m2580-legacy-v2",
     },
     "golf_polo": {
         "catalog_product_id": 767,
         "name": "WedgeIQ MASTER - Adidas A430 Polo",
-        "external_id": "wedgeiq-master-adidas-a430-legacy-v1",
+        "external_id": "wedgeiq-master-adidas-a430-legacy-v2",
     },
     "quarter_zip_performance": {
         "catalog_product_id": 903,
         "name": "WedgeIQ MASTER - Sport-Tek ST357 Quarter Zip",
-        "external_id": "wedgeiq-master-sporttek-st357-legacy-v1",
+        "external_id": "wedgeiq-master-sporttek-st357-legacy-v2",
     },
     "quarter_zip_premium": {
         "catalog_product_id": 1473,
         "name": "WedgeIQ MASTER - Lane Seven LS14014 Quarter Zip",
-        "external_id": "wedgeiq-master-laneseven-ls14014-legacy-v1",
+        "external_id": "wedgeiq-master-laneseven-ls14014-legacy-v2",
     },
     "crewneck": {
         "catalog_product_id": 839,
         "name": "WedgeIQ MASTER - Comfort Colors 1566 Crewneck",
-        "external_id": "wedgeiq-master-comfortcolors-1566-legacy-v1",
+        "external_id": "wedgeiq-master-comfortcolors-1566-legacy-v2",
     },
     "outerwear": {
         "catalog_product_id": 790,
         "name": "WedgeIQ MASTER - Columbia Ascender 212483",
-        "external_id": "wedgeiq-master-columbia-ascender-legacy-v1",
+        "external_id": "wedgeiq-master-columbia-ascender-legacy-v2",
     },
     "golf_towel": {
         "catalog_product_id": 1423,
         "name": "WedgeIQ MASTER - Golf Towel",
-        "external_id": "wedgeiq-master-golf-towel-legacy-v1",
+        "external_id": "wedgeiq-master-golf-towel-legacy-v2",
     },
     "duffle": {
         "catalog_product_id": 465,
         "name": "WedgeIQ MASTER - AOP Duffle Bag",
-        "external_id": "wedgeiq-master-aop-duffle-legacy-v1",
+        "external_id": "wedgeiq-master-aop-duffle-legacy-v2",
     },
 }
 
@@ -109,6 +109,14 @@ def get_source(token, store_id):
         token,
         store_id,
     )
+
+
+def source_is_dtg(source):
+    techniques = {
+        str(p.get("technique_key") or "").upper()
+        for p in source.get("placements", []) or []
+    }
+    return "DTG" in techniques
 
 
 def swap_product(token, store_id, target):
@@ -153,10 +161,12 @@ def main():
 
     target = TARGETS[args.only]
     source_doc = get_source(token, store_id)
+    if source_doc.get("_http_error"):
+        raise SystemExit(f"Could not load source Product Template {SOURCE_TEMPLATE_ID}.")
     source = source_doc.get("result", {}) if isinstance(source_doc, dict) else {}
 
-    print("WedgeIQ legacy Product Template swap pilot")
-    print("------------------------------------------")
+    print("WedgeIQ DTG Product Template swap pilot")
+    print("----------------------------------------")
     print(f"Source template ID:      {SOURCE_TEMPLATE_ID}")
     print(f"Source title:            {source.get('title')}")
     print(f"Source catalog product:  {source.get('product_id')}")
@@ -164,6 +174,13 @@ def main():
     for p in source.get("placements", []) or []:
         print(f"  - {p.get('placement')} | technique={p.get('technique_key')}")
 
+    if not source_is_dtg(source):
+        raise SystemExit(
+            "STOPPED: source template does not report a DTG placement. "
+            "The legacy swap endpoint requires a DTG source."
+        )
+
+    print("Source validation:       DTG CONFIRMED")
     print(f"\nTarget key:              {args.only}")
     print(f"Target catalog product:  {target['catalog_product_id']}")
     print(f"External product ID:     {target['external_id']}")
@@ -175,12 +192,10 @@ def main():
     print("\nPlanned POST:")
     print(f"  /product-templates/{SOURCE_TEMPLATE_ID}/swap-product")
     print(json.dumps(payload, indent=2))
-    print("\nWARNING: Printful documents this legacy design-transfer endpoint as DTG-only.")
-    print("The current WedgeIQ source uses DTF, so this is an intentional one-product experiment.")
 
     if not args.create:
         print("\nDRY RUN ONLY — nothing created.")
-        print("To run the controlled hoodie test:")
+        print("If DTG is confirmed above, run the controlled hoodie test:")
         print(f"  python3 scripts/stage5b_legacy_product_template_swap.py --only {args.only} --create")
         return
 
