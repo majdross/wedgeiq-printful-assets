@@ -149,13 +149,11 @@ def best_candidates(spec, products, count=5):
 
 
 def variant_values(variant):
-    # Printful v2 generally exposes color/size as properties, but names can vary.
     color = variant.get("color") or variant.get("color_name")
     size = variant.get("size") or variant.get("size_name")
     name = variant.get("name", "")
 
     if not color or not size:
-        # Fallback for names such as "Product Name (Black / XL)".
         m = re.search(r"\(([^()/]+)\s*/\s*([^()]+)\)\s*$", name)
         if m:
             color = color or m.group(1).strip()
@@ -179,8 +177,11 @@ def uniq_preserve(values):
 
 
 def choose_requested(requested, available):
+    # Always return a 2-tuple so callers can safely unpack selected/missing.
+    # Empty requested lists mean "no restriction" rather than an error.
     if not requested:
-        return []
+        return [], []
+
     lookup = {normalize(x): x for x in available}
     selected = []
     missing = []
@@ -189,7 +190,6 @@ def choose_requested(requested, available):
         if key in lookup:
             selected.append(lookup[key])
             continue
-        # soft match for variants like Navy vs True Navy / Heather Grey vs Athletic Heather
         matches = [x for x in available if key in normalize(x) or normalize(x) in key]
         if len(matches) == 1:
             selected.append(matches[0])
