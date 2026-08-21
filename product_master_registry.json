@@ -1,11 +1,12 @@
 {
   "brand": "WedgeIQ",
-  "version": "1.0",
+  "version": "1.1",
   "masters": {
     "performance_tee": {
       "catalog_product_id": 108,
       "template_id": 106433451,
       "status": "existing",
+      "technique": "DTF",
       "artwork": "manual",
       "notes": "Existing NL3600 reusable master"
     },
@@ -13,8 +14,57 @@
       "catalog_product_id": 380,
       "template_id": 106481965,
       "status": "existing",
+      "technique": "embroidery",
       "artwork": "manual",
-      "notes": "Manual hoodie master created in Printful Product Templates"
+      "notes": "Manual Cotton Heritage M2580 hoodie master"
+    },
+    "dtg_swap_source": {
+      "catalog_product_id": 380,
+      "template_id": 106482179,
+      "status": "automation_source",
+      "technique": "DTG",
+      "artwork": "placeholder",
+      "notes": "Dedicated DTG source used by legacy swap-product automation"
+    },
+    "crewneck": {
+      "catalog_product_id": 839,
+      "template_id": 106482518,
+      "status": "automated",
+      "technique": "DTG",
+      "artwork": "manual_cleanup",
+      "notes": "Created automatically from DTG swap source; Comfort Colors 1566"
+    },
+    "golf_polo": {
+      "catalog_product_id": 767,
+      "template_id": null,
+      "status": "manual_master_needed",
+      "technique": "embroidery",
+      "artwork": "manual",
+      "notes": "Adidas A430"
+    },
+    "quarter_zip_performance": {
+      "catalog_product_id": 903,
+      "template_id": null,
+      "status": "manual_master_needed",
+      "technique": "DTF",
+      "artwork": "manual",
+      "notes": "Sport-Tek ST357"
+    },
+    "quarter_zip_premium": {
+      "catalog_product_id": 1473,
+      "template_id": null,
+      "status": "manual_master_needed",
+      "technique": "embroidery",
+      "artwork": "manual",
+      "notes": "Lane Seven LS14014"
+    },
+    "outerwear": {
+      "catalog_product_id": 790,
+      "template_id": null,
+      "status": "manual_master_needed",
+      "technique": "embroidery",
+      "artwork": "manual",
+      "notes": "Columbia Ascender 212483"
     }
   }
 }
