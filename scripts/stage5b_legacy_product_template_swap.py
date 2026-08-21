@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
-"""Stage 5B: create a new Printful Product Template via the mature legacy swap-product API.
+"""Stage 5B: automate WedgeIQ Product Template creation via Printful's legacy DTG swap API.
 
-Why this exists:
-- The account can read Product Templates through v2.
-- POST /v2/product-templates currently returns 404 for this account/environment.
-- Printful's mature Product Templates API exposes:
-    POST /product-templates/{template_id}/swap-product
-  which creates a NEW Product Template using a different catalog product.
+Proven path:
+  POST /product-templates/{template_id}/swap-product
 
-This version uses the dedicated WedgeIQ DTG source template:
-  106482179
+Dedicated DTG source Product Template:
+  106482179 - WedgeIQ Hoodie Flight It
 
-The legacy swap endpoint requires the source Product Template to use DTG.
-Default behavior is dry-run. Test ONE hoodie first and visually confirm the
-result in Printful > Product templates before running additional targets.
+The legacy swap endpoint requires a DTG source. This script validates the source,
+checks Printful's compatible-products endpoint, and can create every compatible
+recommended WedgeIQ Product Template while skipping products already registered
+as masters.
+
+Default behavior is dry-run.
+
+Examples:
+  python3 scripts/stage5b_legacy_product_template_swap.py --only golf_polo
+  python3 scripts/stage5b_legacy_product_template_swap.py --only golf_polo --create
+  python3 scripts/stage5b_legacy_product_template_swap.py --check-all
+  python3 scripts/stage5b_legacy_product_template_swap.py --create-all-compatible
 
 Requires:
   PRINTFUL_TOKEN
   PRINTFUL_STORE_ID
-
-Examples:
-  python3 scripts/stage5b_legacy_product_template_swap.py --only hoodie
-  python3 scripts/stage5b_legacy_product_template_swap.py --only hoodie --create
 """
 
 import argparse
@@ -35,52 +36,53 @@ from pathlib import Path
 API = "https://api.printful.com"
 SOURCE_TEMPLATE_ID = 106482179
 OUT_PATH = Path("stage5b_legacy_swap_results.json")
+REGISTRY_PATH = Path("product_master_registry.json")
 
 TARGETS = {
     "hoodie": {
         "catalog_product_id": 380,
         "name": "WedgeIQ MASTER - Cotton Heritage M2580",
-        "external_id": "wedgeiq-master-hoodie-m2580-legacy-v2",
+        "external_id": "wedgeiq-master-hoodie-m2580-legacy-v3",
     },
     "golf_polo": {
         "catalog_product_id": 767,
         "name": "WedgeIQ MASTER - Adidas A430 Polo",
-        "external_id": "wedgeiq-master-adidas-a430-legacy-v2",
+        "external_id": "wedgeiq-master-adidas-a430-legacy-v3",
     },
     "quarter_zip_performance": {
         "catalog_product_id": 903,
         "name": "WedgeIQ MASTER - Sport-Tek ST357 Quarter Zip",
-        "external_id": "wedgeiq-master-sporttek-st357-legacy-v2",
+        "external_id": "wedgeiq-master-sporttek-st357-legacy-v3",
     },
     "quarter_zip_premium": {
         "catalog_product_id": 1473,
         "name": "WedgeIQ MASTER - Lane Seven LS14014 Quarter Zip",
-        "external_id": "wedgeiq-master-laneseven-ls14014-legacy-v2",
+        "external_id": "wedgeiq-master-laneseven-ls14014-legacy-v3",
     },
     "crewneck": {
         "catalog_product_id": 839,
         "name": "WedgeIQ MASTER - Comfort Colors 1566 Crewneck",
-        "external_id": "wedgeiq-master-comfortcolors-1566-legacy-v2",
+        "external_id": "wedgeiq-master-comfortcolors-1566-legacy-v3",
     },
     "outerwear": {
         "catalog_product_id": 790,
         "name": "WedgeIQ MASTER - Columbia Ascender 212483",
-        "external_id": "wedgeiq-master-columbia-ascender-legacy-v2",
+        "external_id": "wedgeiq-master-columbia-ascender-legacy-v3",
     },
     "golf_towel": {
         "catalog_product_id": 1423,
         "name": "WedgeIQ MASTER - Golf Towel",
-        "external_id": "wedgeiq-master-golf-towel-legacy-v2",
+        "external_id": "wedgeiq-master-golf-towel-legacy-v3",
     },
     "duffle": {
         "catalog_product_id": 465,
         "name": "WedgeIQ MASTER - AOP Duffle Bag",
-        "external_id": "wedgeiq-master-aop-duffle-legacy-v2",
+        "external_id": "wedgeiq-master-aop-duffle-legacy-v3",
     },
 }
 
 
-def request_json(method, path, token, store_id, payload=None):
+def request_json(method, path, token, store_id, payload=None, allow_404=False):
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -94,21 +96,14 @@ def request_json(method, path, token, store_id, payload=None):
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
+        if allow_404 and e.code == 404:
+            return {"_http_404": True, "status": 404, "body": body}
         print(f"HTTP {e.code}: {body}", file=sys.stderr)
-        return {
-            "_http_error": True,
-            "status": e.code,
-            "body": body,
-        }
+        return {"_http_error": True, "status": e.code, "body": body}
 
 
 def get_source(token, store_id):
-    return request_json(
-        "GET",
-        f"/product-templates/{SOURCE_TEMPLATE_ID}",
-        token,
-        store_id,
-    )
+    return request_json("GET", f"/product-templates/{SOURCE_TEMPLATE_ID}", token, store_id)
 
 
 def source_is_dtg(source):
@@ -117,6 +112,38 @@ def source_is_dtg(source):
         for p in source.get("placements", []) or []
     }
     return "DTG" in techniques
+
+
+def get_compatible_products(token, store_id):
+    path = f"/product-templates/{SOURCE_TEMPLATE_ID}/compatible-products?limit=100&offset=0"
+    doc = request_json("GET", path, token, store_id, allow_404=True)
+    if doc.get("_http_404") or doc.get("_http_error"):
+        return {"supported": False, "items": [], "raw": doc}
+    return {"supported": True, "items": doc.get("result", []) or [], "raw": doc}
+
+
+def product_id(item):
+    return item.get("id") or item.get("catalog_product_id") or item.get("product_id")
+
+
+def find_target(items, target_id):
+    for item in items:
+        try:
+            if int(product_id(item)) == int(target_id):
+                return item
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def load_registered_masters():
+    if not REGISTRY_PATH.exists():
+        return {}
+    try:
+        doc = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+        return doc.get("masters", {}) if isinstance(doc, dict) else {}
+    except Exception:
+        return {}
 
 
 def swap_product(token, store_id, target):
@@ -134,107 +161,196 @@ def swap_product(token, store_id, target):
     return payload, response
 
 
+def load_results():
+    if not OUT_PATH.exists():
+        return []
+    try:
+        rows = json.loads(OUT_PATH.read_text(encoding="utf-8"))
+        return rows if isinstance(rows, list) else []
+    except Exception:
+        return []
+
+
 def save_result(row):
-    rows = []
-    if OUT_PATH.exists():
-        try:
-            rows = json.loads(OUT_PATH.read_text(encoding="utf-8"))
-            if not isinstance(rows, list):
-                rows = []
-        except Exception:
-            rows = []
+    rows = load_results()
     rows = [r for r in rows if r.get("key") != row.get("key")]
     rows.append(row)
     OUT_PATH.write_text(json.dumps(rows, indent=2), encoding="utf-8")
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--only", default="hoodie", choices=sorted(TARGETS))
-    ap.add_argument("--create", action="store_true")
-    args = ap.parse_args()
+def already_created_from_results(key):
+    for row in load_results():
+        if row.get("key") == key and row.get("status") == "created" and row.get("new_template_id"):
+            return row.get("new_template_id")
+    return None
 
-    token = os.getenv("PRINTFUL_TOKEN")
-    store_id = os.getenv("PRINTFUL_STORE_ID")
-    if not token or not store_id:
-        raise SystemExit("Set PRINTFUL_TOKEN and PRINTFUL_STORE_ID first.")
 
-    target = TARGETS[args.only]
-    source_doc = get_source(token, store_id)
-    if source_doc.get("_http_error"):
-        raise SystemExit(f"Could not load source Product Template {SOURCE_TEMPLATE_ID}.")
-    source = source_doc.get("result", {}) if isinstance(source_doc, dict) else {}
-
-    print("WedgeIQ DTG Product Template swap pilot")
-    print("----------------------------------------")
+def display_source(source):
+    print("WedgeIQ DTG Product Template automation")
+    print("---------------------------------------")
     print(f"Source template ID:      {SOURCE_TEMPLATE_ID}")
     print(f"Source title:            {source.get('title')}")
     print(f"Source catalog product:  {source.get('product_id')}")
     print("Source placements:")
     for p in source.get("placements", []) or []:
         print(f"  - {p.get('placement')} | technique={p.get('technique_key')}")
-
-    if not source_is_dtg(source):
-        raise SystemExit(
-            "STOPPED: source template does not report a DTG placement. "
-            "The legacy swap endpoint requires a DTG source."
-        )
-
     print("Source validation:       DTG CONFIRMED")
-    print(f"\nTarget key:              {args.only}")
-    print(f"Target catalog product:  {target['catalog_product_id']}")
-    print(f"External product ID:     {target['external_id']}")
 
-    payload = {
-        "product_id": target["catalog_product_id"],
-        "external_product_id": target["external_id"],
-    }
-    print("\nPlanned POST:")
-    print(f"  /product-templates/{SOURCE_TEMPLATE_ID}/swap-product")
-    print(json.dumps(payload, indent=2))
 
-    if not args.create:
+def main():
+    ap = argparse.ArgumentParser()
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--only", choices=sorted(TARGETS), help="Work with one recommended target")
+    mode.add_argument("--check-all", action="store_true", help="Check all recommended targets; create nothing")
+    mode.add_argument(
+        "--create-all-compatible",
+        action="store_true",
+        help="Create every compatible recommended target that is not already registered/created",
+    )
+    ap.add_argument("--create", action="store_true", help="Create the --only target")
+    args = ap.parse_args()
+
+    if args.create and not args.only:
+        raise SystemExit("--create must be used with --only.")
+
+    token = os.getenv("PRINTFUL_TOKEN")
+    store_id = os.getenv("PRINTFUL_STORE_ID")
+    if not token or not store_id:
+        raise SystemExit("Set PRINTFUL_TOKEN and PRINTFUL_STORE_ID first.")
+
+    source_doc = get_source(token, store_id)
+    if source_doc.get("_http_error"):
+        raise SystemExit(f"Could not load source Product Template {SOURCE_TEMPLATE_ID}.")
+    source = source_doc.get("result", {}) if isinstance(source_doc, dict) else {}
+    if not source_is_dtg(source):
+        raise SystemExit("STOPPED: source template is not DTG. Nothing created.")
+
+    display_source(source)
+    print("\nChecking Printful compatible products...")
+    compat = get_compatible_products(token, store_id)
+    if not compat["supported"]:
+        raise SystemExit("STOPPED: Printful compatible-products endpoint is unavailable. Nothing created.")
+
+    compatible_items = compat["items"]
+    print(f"Compatible products returned: {len(compatible_items)}")
+    registered = load_registered_masters()
+
+    keys = [args.only] if args.only else list(TARGETS.keys())
+    create_all = args.create_all_compatible
+    create_one = bool(args.only and args.create)
+
+    print("\nRecommended target plan")
+    print("-----------------------")
+    plan = []
+    for key in keys:
+        target = TARGETS[key]
+        match = find_target(compatible_items, target["catalog_product_id"])
+        registered_id = (registered.get(key) or {}).get("template_id")
+        previous_id = already_created_from_results(key)
+
+        if registered_id:
+            action = f"SKIP — registered master {registered_id}"
+        elif previous_id:
+            action = f"SKIP — already created {previous_id}"
+        elif match:
+            action = "CREATE" if (create_all or create_one) else "READY"
+        else:
+            action = "SKIP — incompatible"
+
+        matched_name = ""
+        if match:
+            matched_name = match.get("name") or match.get("title") or ""
+
+        print(
+            f"{key:26} | product {target['catalog_product_id']:4} | "
+            f"compatible={'YES' if match else 'NO ':3} | {action}"
+        )
+        if matched_name:
+            print(f"  ↳ {matched_name}")
+
+        plan.append((key, target, match, registered_id, previous_id))
+
+    if not create_all and not create_one:
         print("\nDRY RUN ONLY — nothing created.")
-        print("If DTG is confirmed above, run the controlled hoodie test:")
-        print(f"  python3 scripts/stage5b_legacy_product_template_swap.py --only {args.only} --create")
+        if args.check_all or not args.only:
+            print("To create every compatible unregistered recommended product:")
+            print("  python3 scripts/stage5b_legacy_product_template_swap.py --create-all-compatible")
+        elif args.only:
+            print(f"To create {args.only}:")
+            print(f"  python3 scripts/stage5b_legacy_product_template_swap.py --only {args.only} --create")
         return
 
-    print("\nAttempting legacy Product Template swap...")
-    sent, response = swap_product(token, store_id, target)
-    row = {
-        "key": args.only,
-        "source_template_id": SOURCE_TEMPLATE_ID,
-        "target": target,
-        "payload": sent,
-        "response": response,
-    }
+    print("\nCreating compatible Product Templates...")
+    created = []
+    skipped = []
+    failed = []
 
-    if response.get("_http_error"):
-        row["status"] = "failed"
+    for key, target, match, registered_id, previous_id in plan:
+        if registered_id:
+            skipped.append((key, f"registered master {registered_id}"))
+            continue
+        if previous_id:
+            skipped.append((key, f"already created {previous_id}"))
+            continue
+        if not match:
+            skipped.append((key, "not compatible"))
+            continue
+
+        print(f"\n[{key}] swapping to catalog product {target['catalog_product_id']}...")
+        sent, response = swap_product(token, store_id, target)
+        row = {
+            "key": key,
+            "source_template_id": SOURCE_TEMPLATE_ID,
+            "target": target,
+            "compatible_match": match,
+            "payload": sent,
+            "response": response,
+        }
+
+        if response.get("_http_error"):
+            row["status"] = "failed"
+            save_result(row)
+            failed.append((key, response.get("status"), response.get("body")))
+            print(f"  FAILED HTTP {response.get('status')}")
+            continue
+
+        result = response.get("result", {}) or {}
+        new_id = result.get("id")
+        row["new_template_id"] = new_id
+        row["status"] = "created" if new_id else "unexpected_response"
         save_result(row)
-        print(f"Swap failed with HTTP {response.get('status')}.")
-        print(f"Saved response to {OUT_PATH}")
+
+        if new_id:
+            created.append((key, new_id, result.get("title"), result.get("product_id")))
+            print(f"  SUCCESS — template {new_id} | {result.get('title')}")
+        else:
+            failed.append((key, "no_template_id", json.dumps(response)))
+            print("  FAILED — no Product Template ID returned")
+
+    print("\nAutomation summary")
+    print("------------------")
+    if created:
+        print("Created:")
+        for key, new_id, title, pid in created:
+            print(f"  - {key}: template {new_id} | product {pid} | {title}")
+    else:
+        print("Created: none")
+
+    if skipped:
+        print("Skipped:")
+        for key, reason in skipped:
+            print(f"  - {key}: {reason}")
+
+    if failed:
+        print("Failed:")
+        for key, status, _body in failed:
+            print(f"  - {key}: {status}")
+
+    print(f"\nDetailed responses saved to {OUT_PATH}")
+    print("Open Printful > Product templates and review the created blanks before final artwork/technique cleanup.")
+
+    if failed:
         raise SystemExit(2)
-
-    result = response.get("result", {}) or {}
-    new_id = result.get("id")
-    row["new_template_id"] = new_id
-    row["status"] = "created" if new_id else "unexpected_response"
-    save_result(row)
-
-    print(f"Saved response to {OUT_PATH}")
-    if not new_id:
-        print("No new Product Template ID returned. Stop here.")
-        raise SystemExit(2)
-
-    print(f"SUCCESS — new Product Template ID: {new_id}")
-    print(f"Returned title: {result.get('title')}")
-    print(f"Returned product_id: {result.get('product_id')}")
-    print("\nSTOP HERE. Open Printful > Product templates and visually verify:")
-    print("  1. the new hoodie template exists")
-    print("  2. the blank is Cotton Heritage M2580")
-    print("  3. placements/artwork transferred acceptably")
-    print("Do not run other products until this pilot is confirmed.")
 
 
 if __name__ == "__main__":
